@@ -2,7 +2,7 @@
  * S3-WIFI-ST  ->  FIRMWARE DE DIAGNOSTICO: barrido de GPIO para LOCALIZAR LOS LEDs
  *
  * Para que sirve:
- *   El firmware FASE 1 corre y saluda por consola, pero en la placa de David los
+ *   El firmware FASE 1 corre y saluda por consola, pero en la placa de pruebas los
  *   LEDs "power / net / com" no parpadean en PA12/PA05 (los pines que documenta
  *   upstream). Este sketch enciende UN GPIO cada vez, anunciandolo por consola,
  *   para identificar EMPIRICAMENTE que pin enciende que LED.

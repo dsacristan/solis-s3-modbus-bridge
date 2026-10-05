@@ -69,8 +69,8 @@ particular el bug de **LibreTiny 1.13.0 rompiendo el RX del UART0**, que no esta
 - **Hajo Noerenberg (`hn`)** por `ginlong-solis`, su documentación y su firmware de referencia.
 - **`TjepkemaTechniek`, `zejulio`, `ube80`, `NH-Networks`** y demás usuarios de los issues de
   `ginlong-solis` por compartir qué versiones funcionan y cuáles no: eso nos ahorró días.
-- **David** por confiar el hardware, por las mediciones con el polímetro (transceptor, A/B, RO) y
-  por la paciencia durante la depuración.
+- **A quien cedió el hardware de pruebas**, por las mediciones con el polímetro (transceptor, A/B, RO)
+  y por la paciencia durante la depuración.
 
 ## Nota sobre licencias
 
