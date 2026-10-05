@@ -1,0 +1,28 @@
+# PlatformIO / build
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# ESPHome (venvs y builds de referencia)
+esphome-env*/
+esphome-env-2026.1.5/
+esphome-env-2026.9/
+esphome/.esphome/
+
+# Secretos (NUNCA subir)
+esphome/secrets.yaml
+secrets.yaml
+*.secret
+
+# Artefactos antiguos / backups
+dist/archive/
+*.orig
+*.bak
+
+# Python
+__pycache__/
+*.pyc
+
+# SO
+.DS_Store
+Thumbs.db
