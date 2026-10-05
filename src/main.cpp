@@ -116,7 +116,7 @@ enum Mode { MODE_STA, MODE_AP };
 static Mode g_mode = MODE_STA;
 
 // --- Versión del firmware (visible en dashboard + /api/status) ---
-#define FIRMWARE_VERSION "v18"
+#define FIRMWARE_VERSION "v19"
 #define FIRMWARE_BUILD   (__DATE__ " " __TIME__)
 
 // --- Servidor HTTP + contadores ---
@@ -349,7 +349,6 @@ static String buildStatusJson() {
     if (i) j += F(",");
     j += F("\""); j += PROBE_NAMES[i]; j += F("\":"); j += String(g_probeValues[i]);
   }
-  j += F("},");
   j += F("}}");
   return j;
 }
