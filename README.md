@@ -69,7 +69,7 @@ pio run -e solis-s3          # -> .pio/build/solis-s3/firmware.uf2
 ```
 
 Para grabar el stick la primera vez hay que poner el MCU en **UART boot mode** (basta con un jumper;
-no hay que soldar):
+no hay que soldar. Referencia: https://github.com/hn/ginlong-solis/issues/48#issuecomment-2371866988):
 
 ```bash
 # 1. BACKUP OBLIGATORIO del firmware original (8 MiB exactos):
