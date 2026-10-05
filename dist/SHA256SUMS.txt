@@ -22,3 +22,4 @@ solis-s3-PUENTE-v15-rs485fix-webota.bin  4acfdd73f24b2511305a4776fa64d36750c78d1
 solis-s3-PUENTE-v15-rs485fix-webota.uf2  4acfdd73f24b2511305a4776fa64d36750c78d1b3cd81c943014b6b8ba12e3de
 solis-s3-PUENTE-v16-rs485fix-webota-wifidef.uf2  3b62f93a4fccd357eea490bf0e4168c9feae4ec5ccb820a81155c36b99e87e7b
 solis-s3-PUENTE-v17-lt110-rs485fix-webota.uf2  91c5ebf30caf8c9cc6880977180b1827de8b6c257843429a7d03c257c62f5406
+solis-s3-PUENTE-v19-lt110-jsonfix-webota.uf2  e8c84ff4822d791e829da27f40b57cf7b7b7cb03c93124c072df99d4f778e08b
