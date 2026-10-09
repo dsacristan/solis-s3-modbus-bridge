@@ -5,10 +5,10 @@
 Uso:  python3 post_comments.py            # publica los .md de este directorio
       python3 post_comments.py --dry-run  # solo muestra qué haría
 """
-import json, sys, urllib.request, urllib.error
+import json, os, sys, urllib.request, urllib.error
 from pathlib import Path
 
-TOK = open("/home/ubuntu/.gh_token").read().strip()
+TOK = (os.environ.get("GH_TOKEN") or Path.home().joinpath(".gh_token").read_text()).strip()
 API = "https://api.github.com/repos/hn/ginlong-solis/issues/{n}/comments"
 HERE = Path(__file__).parent
 DRY = "--dry-run" in sys.argv
