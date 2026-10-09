@@ -178,9 +178,8 @@ Lista completa de referencias, herramientas y agradecimientos: [`docs/referencia
 
 ## Autoría
 
-Proyecto desarrollado por **David** en colaboración con **Hermes** (agente de Nous Research) y
-**DeepSeek** (modelo de lenguaje), que participaron en la depuración del firmware, del protocolo Modbus
-y de la integración de Home Assistant.
+Se ha usado  **Hermes** (agente de Nous Research) y **DeepSeek** (modelo de lenguaje), para la codificación, la depuración del firmware, del protocolo Modbus
+y la integración de Home Assistant.
 
 ## Licencia
 
