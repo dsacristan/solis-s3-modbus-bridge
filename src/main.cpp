@@ -95,6 +95,9 @@ static const uint32_t RS485_INTERBYTE_MS  = 15;    // fin de trama RS485: gap > 
 static const uint32_t RTU_SILENCE_MS      = 15;    // delimita tramas en el puerto RTU crudo
 static const uint32_t MODBUS_IDLE_MS      = 3000;  // descarta tramas parciales tras este silencio
 static const uint32_t MODBUS_ALIVE_MS     = 30000; // ventana para considerar "vivo" el puente
+static const uint32_t MODBUS_CLIENT_IDLE_MS = 180000; // sin trafico 3 min -> liberar slot
+                                                      // (clientes sondean a rafagas; el keepalive
+                                                      //  ya detecta al par muerto en ~30 s)
 static const size_t   MODBUS_BUF_SZ       = mbp::MBAP_HDR + mbp::PDU_MAX + 1;  // 261 B
 
 // --- Config persistente en flash (partición kvs, FLASH_KVS_OFFSET) ---
@@ -116,7 +119,7 @@ enum Mode { MODE_STA, MODE_AP };
 static Mode g_mode = MODE_STA;
 
 // --- Versión del firmware (visible en dashboard + /api/status) ---
-#define FIRMWARE_VERSION "v19"
+#define FIRMWARE_VERSION "v20"
 #define FIRMWARE_BUILD   (__DATE__ " " __TIME__)
 
 // --- Servidor HTTP + contadores ---
@@ -143,6 +146,7 @@ static uint32_t g_rtuOk  = 0, g_rtuErr  = 0;
 static uint32_t g_crcErrors = 0;
 static uint32_t g_lastOkMs  = 0;  // millis() de la última trama válida del inversor (0 = nunca)
 static uint32_t g_rxRawBytes = 0; // bytes crudos recibidos por RS485 (diagnóstico: >0 => el RX oye algo)
+static uint32_t g_evictions  = 0; // clientes liberados por inactividad (fix 08/10/2026)
 
 // --- Resultados de escaneo WiFi (modo config) ---
 #define MAX_NETWORKS 20
@@ -282,6 +286,7 @@ static String buildDashboard() {
   h += String(g_rtuOk); h += F(" ok · "); h += String(g_rtuErr); h += F(" err");
   if (g_rtuClient) h += F(" · cliente activo");
   h += F("</td></tr>");
+  h += F("<tr><td>Evicciones por inactividad</td><td>"); h += String(g_evictions); h += F("</td></tr>");
   h += F("<tr><td>Errores CRC RS485</td><td>"); h += String(g_crcErrors); h += F("</td></tr>");
   h += F("<tr><td>Bytes RX RS485 (crudos)</td><td>"); h += String(g_rxRawBytes); h += F("</td></tr>");
   h += F("<tr><td>Última trama Modbus</td><td>");
@@ -335,13 +340,18 @@ static String buildStatusJson() {
   j += F(",\"err\":"); j += String(g_mbapErr);
   j += F(",\"drop\":"); j += String(g_mbapDrop);
   j += F(",\"client\":"); j += (g_mbapClient ? F("true") : F("false"));
+  j += F(",\"idle_ms\":");
+  if (g_mbapClient) j += String((uint32_t)(millis() - g_mbapLast)); else j += F("null");
   j += F("},\"modbus_rtu\":{\"port\":5020,\"ok\":"); j += String(g_rtuOk);
   j += F(",\"err\":"); j += String(g_rtuErr);
   j += F(",\"client\":"); j += (g_rtuClient ? F("true") : F("false"));
+  j += F(",\"idle_ms\":");
+  if (g_rtuClient) j += String((uint32_t)(millis() - g_rtuLast)); else j += F("null");
   j += F("},\"modbus\":{\"alive\":"); j += (modbusAlive ? F("true") : F("false"));
   j += F(",\"last_ok_ms_ago\":");
   if (g_lastOkMs) j += String((millis() - g_lastOkMs)); else j += F("null");
   j += F("},\"crc_errors\":"); j += String(g_crcErrors);
+  j += F(",\"evictions\":"); j += String(g_evictions);
   j += F(",\"rs485\":{\"baud\":"); j += String(g_rs485Baud); j += F(",\"unit\":"); j += String(g_modbusUnit);
   j += F(",\"rx_raw_bytes\":"); j += String(g_rxRawBytes); j += F("}");
   j += F(",\"probe\":{");
@@ -743,6 +753,16 @@ static void modbusTcpService() {
     return;
   }
 
+  // Evicción por inactividad: si el cliente no manda NADA en MODBUS_CLIENT_IDLE_MS,
+  // liberamos el único slot (evita que un par muerto lo monopolice indefinidamente).
+  if (millis() - g_mbapLast > MODBUS_CLIENT_IDLE_MS) {
+    Serial.println("Modbus TCP: slot liberado por inactividad");
+    g_mbapClient.stop();
+    g_mbapLen = 0;
+    g_evictions++;
+    return;
+  }
+
   // Acumular los bytes disponibles.
   while (g_mbapClient.available() > 0) {
     if (g_mbapLen >= sizeof(g_mbapBuf)) {  // desbordamiento -> descartar
@@ -783,6 +803,15 @@ static void modbusRtuService() {
   if (!g_rtuClient.connected()) {
     g_rtuClient.stop();
     g_rtuLen = 0;
+    return;
+  }
+
+  // Evicción por inactividad (mismo criterio que en el puerto TCP).
+  if (millis() - g_rtuLast > MODBUS_CLIENT_IDLE_MS) {
+    Serial.println("Modbus RTU: slot liberado por inactividad");
+    g_rtuClient.stop();
+    g_rtuLen = 0;
+    g_evictions++;
     return;
   }
 
