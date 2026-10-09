@@ -12,15 +12,19 @@ datos en tiempo real, para **cargar el coche con el excedente solar**.
 ## ⚠️ Estado: FUNCIONA (verificado en hardware)
 
 Este repositorio nació de semanas de depuración. El puente **lee el inversor** y sirve Modbus TCP.
-Dos trampas nos costaron mucho tiempo — **si vas a reutilizar este código, léelas antes** (están
+Varias trampas nos costaron mucho tiempo — **si vas a reutilizar este código, léelas antes** (están
 detalladas en [`docs/hallazgos.md`](docs/hallazgos.md)):
 
 1. **`platform = libretiny@1.10.0` es OBLIGATORIO.** Con LibreTiny **1.13.0 el RX del UART0 no recibe
    nada** (el TX sale perfecto, pero cero bytes entrantes). Es un bug del driver del core.
 2. Si usas el firmware **ESPHome de referencia** en su lugar: las versiones **2026.2–2026.6 compilan
    pero NO leen Modbus** (y rompen la API y la OTA). Usa **2026.1.x**.
+3. **El keepalive TCP de lwIP por defecto es de 2 horas.** En builds solo-WiFi el override del SDK
+   (`TCP_KEEPIDLE_DEFAULT=10 s`) queda compilado fuera, así que un cliente que muere sin cerrar la
+   conexión ocupa su *slot* ~2 h. El firmware lo endurece vía `build_flags` (keepalive corto + pool de
+   sockets mayor) y añade **evicción por inactividad**; detalle en [`docs/hallazgos.md`](docs/hallazgos.md).
 
-Y una tercera, de operación: **cambiar de firmware borra la config WiFi del puente** (ambos firmwares
+Y otra, de operación: **cambiar de firmware borra la config WiFi del puente** (ambos firmwares
 usan la partición `kvs`), así que el stick arranca en modo AP y hay que reconectar la WiFi.
 
 ---
@@ -97,8 +101,8 @@ tu WiFi (por DHCP). **No hay credenciales embebidas en el firmware.**
 
 | Endpoint | Para qué |
 |---|---|
-| `GET /` | Panel HTML con estado, diagnóstico RS485 y formulario de baud/unit |
-| `GET /api/status` | JSON de estado (versión, WiFi, contadores Modbus, `rs485.rx_raw_bytes`, `probe`) |
+| `GET /` | Panel HTML con estado y diagnóstico RS485 |
+| `GET /api/status` | JSON de estado (versión, WiFi, contadores Modbus, `evictions`, `idle_ms`, `rs485.rx_raw_bytes`) |
 | `GET /raw?hex=<hex>&crc=1&hold=<ms>` | **Diagnóstico**: envía una trama RS485 y devuelve `{tx,rx,n,crc_ok}` |
 | `GET /update` · `POST /update` | OTA por web (subir `.uf2`) |
 
@@ -117,7 +121,7 @@ FC3. Ejemplo de comprobación:
 python3 tools/mbtest_tcp.py <IP> 502 1 35000 4 1
 ```
 
-Configuración de referencia para **evcc** (pendiente de validar en producción):
+Configuración de referencia para **evcc**:
 
 ```yaml
 meters:
@@ -154,6 +158,7 @@ src/            firmware del puente (PlatformIO / Arduino-LibreTiny)
   diag.cpp, diag_btn.cpp  firmwares de diagnóstico (entornos `diag` / `diag-btn`)
 tools/          utilidades de host: test Modbus (g++), verify_uf2.py, mbtest_tcp.py, raw_sweep.sh
 esphome/        YAML del firmware ESPHome de REFERENCIA (comparativa / alternativa)
+ha/             paquete de Home Assistant (`modbus`, FC4 · :502) para leer el puente
 docs/           documentación del proyecto (hallazgos, hardware, protocolo, referencias)
 dist/           binarios compilados (.uf2 / .bin) + SHA256SUMS
 ```
@@ -170,6 +175,12 @@ Este proyecto se apoya **especialmente** en el trabajo de **Hajo Noerenberg**:
 > proyecto esto no habría sido posible.**
 
 Lista completa de referencias, herramientas y agradecimientos: [`docs/referencias.md`](docs/referencias.md).
+
+## Autoría
+
+Proyecto desarrollado por **David** en colaboración con **Hermes** (agente de Nous Research) y
+**DeepSeek** (modelo de lenguaje), que participaron en la depuración del firmware, del protocolo Modbus
+y de la integración de Home Assistant.
 
 ## Licencia
 

@@ -56,22 +56,6 @@ static const uint8_t PIN_LED_WIFI = PIN_PA05;  // LED verde   (estado WiFi)
 static const uint8_t PIN_WDT      = PIN_PA00;  // kick del watchdog hardware
 static const uint8_t PIN_BOTON    = PIN_PA08;  // botón reset (activo-LOW)
 
-// --- Sondeo de pines GPIO para localizar el RO del transceptor RS485 ---
-// El RO conduce HIGH (3,3 V) en reposo (bus en mark). Leemos los pines libres
-// como INPUT y los exponemos en el dashboard: el que lea 1 es el RO.
-static const uint8_t PROBE_PINS[] = { PIN_PA00, PIN_PA05, PIN_PA08, PIN_PA12, PIN_PA14, PIN_PA15, PIN_PA18, PIN_PA19, PIN_PA22, PIN_PA23, PIN_PA29, PIN_PA30 };
-static const char  *PROBE_NAMES[] = { "PA00", "PA05", "PA08", "PA12", "PA14", "PA15", "PA18", "PA19", "PA22", "PA23", "PA29", "PA30" };
-#define PROBE_COUNT 12
-static int g_probeValues[PROBE_COUNT];
-
-// Sondea todos los pines GPIO accesibles como INPUT (sin pull-up) y guarda su
-// nivel lógico. Debe ejecutarse ANTES de configurar las UARTs (que reasignan pines).
-static void doProbe() {
-  for (uint8_t i = 0; i < PROBE_COUNT; i++) pinMode(PROBE_PINS[i], INPUT);
-  delay(10);
-  for (uint8_t i = 0; i < PROBE_COUNT; i++) g_probeValues[i] = digitalRead(PROBE_PINS[i]);
-}
-
 // --- Red de trabajo por defecto (solo como fallback; lo normal es leer flash) ---
 static const uint16_t HTTP_PORT = 80;
 
@@ -80,9 +64,9 @@ static const char *AP_SSID = "SolisS3-Setup";
 static const IPAddress AP_IP(192, 168, 4, 1);
 
 // --- Parámetros del enlace al inversor ---
-static uint32_t g_rs485Baud = 9600;   // baud del RS485 al inversor (cambiable desde el dashboard)
-static const uint32_t DEBUG_BAUD    = 9600;
-static uint8_t  g_modbusUnit  = 0x01; // unit/device Modbus del inversor (cambiable)
+static const uint32_t g_rs485Baud = 9600;   // baud del RS485 (confirmado en el menú del inversor)
+static const uint32_t DEBUG_BAUD  = 9600;
+static const uint8_t  g_modbusUnit = 0x01;  // unit Modbus del inversor (confirmado)
 static const uint32_t WDT_KICK_MS   = 5000;
 static const uint32_t RECONNECT_MS  = 30000;
 static const uint32_t LONG_PRESS_MS = 10000;  // >10 s -> modo configuración
@@ -96,8 +80,9 @@ static const uint32_t RTU_SILENCE_MS      = 15;    // delimita tramas en el puer
 static const uint32_t MODBUS_IDLE_MS      = 3000;  // descarta tramas parciales tras este silencio
 static const uint32_t MODBUS_ALIVE_MS     = 30000; // ventana para considerar "vivo" el puente
 static const uint32_t MODBUS_CLIENT_IDLE_MS = 180000; // sin trafico 3 min -> liberar slot
-                                                      // (clientes sondean a rafagas; el keepalive
-                                                      //  ya detecta al par muerto en ~30 s)
+                                                      // (medido 09/10/2026: los clientes sondean a
+                                                      //  rafagas con huecos <=28 s; el keepalive ya
+                                                      //  detecta al par muerto en ~30 s)
 static const size_t   MODBUS_BUF_SZ       = mbp::MBAP_HDR + mbp::PDU_MAX + 1;  // 261 B
 
 // --- Config persistente en flash (partición kvs, FLASH_KVS_OFFSET) ---
@@ -119,7 +104,7 @@ enum Mode { MODE_STA, MODE_AP };
 static Mode g_mode = MODE_STA;
 
 // --- Versión del firmware (visible en dashboard + /api/status) ---
-#define FIRMWARE_VERSION "v20"
+#define FIRMWARE_VERSION "v21"
 #define FIRMWARE_BUILD   (__DATE__ " " __TIME__)
 
 // --- Servidor HTTP + contadores ---
@@ -272,12 +257,6 @@ static String buildDashboard() {
   h += F("<tr><td>Uptime</td><td>"); h += String(millis() / 1000); h += F(" s</td></tr>");
   h += F("<tr><td>HTTP servidas</td><td>"); h += String(g_httpRequests); h += F("</td></tr>");
   h += F("<tr><td>RS485 (UART0)</td><td>"); h += String(g_rs485Baud); h += F(" 8N1 · unit "); h += String(g_modbusUnit); h += F("</td></tr>");
-  h += F("<tr><td>Probe GPIO</td><td>");
-  for (uint8_t i = 0; i < PROBE_COUNT; i++) {
-    h += PROBE_NAMES[i]; h += F("="); h += String(g_probeValues[i]);
-    if (i + 1 < PROBE_COUNT) h += F(" · ");
-  }
-  h += F("</td></tr>");
   h += F("<tr><td>Modbus TCP :502</td><td>");
   h += String(g_mbapOk); h += F(" ok · "); h += String(g_mbapErr); h += F(" err");
   if (g_mbapClient) h += F(" · cliente activo");
@@ -299,20 +278,6 @@ static String buildDashboard() {
   h += F("</table>");
 
   h += F("<p><a href='/api/status'>/api/status</a> (JSON)</p>");
-  h += F("<form method='get' action='/setrs485' style='margin-top:.8rem'>");
-  h += F("<label style='font-size:.85rem;color:#aaa'>Baud RS485: <select name='baud' style='background:#1c1c1c;color:#e0e0e0;border:1px solid #333'>");
-  static const uint32_t bauds[] = {4800, 9600, 19200, 38400, 57600, 115200};
-  for (uint8_t i = 0; i < 6; i++) {
-    h += F("<option value='"); h += String(bauds[i]); h += F("'");
-    if (bauds[i] == g_rs485Baud) h += F(" selected");
-    h += F(">"); h += String(bauds[i]); h += F("</option>");
-  }
-  h += F("</select></label> ");
-  h += F("<label style='font-size:.85rem;color:#aaa'>Unit: <input name='unit' type='number' min='1' max='247' value='");
-  h += String(g_modbusUnit);
-  h += F("' style='width:4em;background:#1c1c1c;color:#e0e0e0;border:1px solid #333'></label> ");
-  h += F("<button type='submit' style='background:#2ecc71;color:#0a0a0a;border:0;border-radius:4px;padding:.3rem .7rem'>Aplicar</button>");
-  h += F("</form>");
   h += F("<p style='color:#888;font-size:.85rem'>Modo configuración: mantén el botón 10 s.</p>");
   h += F("</body></html>");
   return h;
@@ -354,12 +319,7 @@ static String buildStatusJson() {
   j += F(",\"evictions\":"); j += String(g_evictions);
   j += F(",\"rs485\":{\"baud\":"); j += String(g_rs485Baud); j += F(",\"unit\":"); j += String(g_modbusUnit);
   j += F(",\"rx_raw_bytes\":"); j += String(g_rxRawBytes); j += F("}");
-  j += F(",\"probe\":{");
-  for (uint8_t i = 0; i < PROBE_COUNT; i++) {
-    if (i) j += F(",");
-    j += F("\""); j += PROBE_NAMES[i]; j += F("\":"); j += String(g_probeValues[i]);
-  }
-  j += F("}}");
+  j += F("}");
   return j;
 }
 
@@ -371,23 +331,6 @@ static void handleRoot() {
 static void handleStatus() {
   g_httpRequests++; flashCom();
   server.send(200, F("application/json"), buildStatusJson());
-}
-
-static void handleSetRs485() {  g_httpRequests++; flashCom();  if (server.hasArg("baud")) {
-    uint32_t b = (uint32_t)server.arg("baud").toInt();
-    if (b == 4800 || b == 9600 || b == 19200 || b == 38400 || b == 57600 || b == 115200) {
-      g_rs485Baud = b;
-      Serial0.begin(g_rs485Baud, SERIAL_8N1);
-      Serial.print("Baud RS485 -> ");
-      Serial.println(g_rs485Baud);
-    }
-  }
-  if (server.hasArg("unit")) {
-    int u = server.arg("unit").toInt();
-    if (u >= 1 && u <= 247) g_modbusUnit = (uint8_t)u;
-  }
-  server.sendHeader("Location", "/", true);
-  server.send(302, F("text/plain"), "");
 }
 
 // ---------------------------------------------------------------------------
@@ -753,8 +696,8 @@ static void modbusTcpService() {
     return;
   }
 
-  // Evicción por inactividad: si el cliente no manda NADA en MODBUS_CLIENT_IDLE_MS,
-  // liberamos el único slot (evita que un par muerto lo monopolice indefinidamente).
+  // Eviccion por inactividad: si el cliente no manda NADA en MODBUS_CLIENT_IDLE_MS,
+  // liberamos el unico slot (evita que un par muerto lo monopolice indefinidamente).
   if (millis() - g_mbapLast > MODBUS_CLIENT_IDLE_MS) {
     Serial.println("Modbus TCP: slot liberado por inactividad");
     g_mbapClient.stop();
@@ -806,7 +749,7 @@ static void modbusRtuService() {
     return;
   }
 
-  // Evicción por inactividad (mismo criterio que en el puerto TCP).
+  // Eviccion por inactividad (mismo criterio que en el puerto TCP).
   if (millis() - g_rtuLast > MODBUS_CLIENT_IDLE_MS) {
     Serial.println("Modbus RTU: slot liberado por inactividad");
     g_rtuClient.stop();
@@ -862,9 +805,6 @@ void setup() {
   Serial.print("MCU: RTL8710BN @ ");
   Serial.print(LT.getCpuFreqMHz());
   Serial.println(" MHz");
-
-  // Sondeo de pines GPIO ANTES de configurar UARTs (para localizar el RO).
-  doProbe();
 
   // RS485 + LEDs + watchdog + botón
   // UART0 completo (TX PA23 / RX PA18) + DE/RE en PA19 — igual que el ESPHome
@@ -963,7 +903,6 @@ void setup() {
 
     server.on("/", handleRoot);
     server.on("/api/status", handleStatus);
-    server.on("/setrs485", handleSetRs485);
     server.on("/raw", handleRaw);
     server.on("/update", HTTP_GET, handleUpdatePage);
     server.on("/update", HTTP_POST, handleUpdateDone, handleUpdateUpload);

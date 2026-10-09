@@ -1,0 +1,772 @@
+# =============================================================================
+#  solis-modbus-bridge.yaml — Paquete de Home Assistant
+#
+#  Lee el inversor Solis S5-EH1P4.6K-L LOCALMENTE, a través del puente Modbus
+#  del stick S3 (github.com/dsacristan/solis-s3-modbus-bridge) y REPRODUCE las
+#  entidades `sensor.solis_*` que antes servía la integración CLOUD, para que
+#  los paneles, plantillas, contadores y el panel de energía sigan funcionando
+#  SIN TOCARLOS.
+#
+#  Cómo usarlo (en configuration.yaml):
+#      homeassistant:
+#        packages: !include_dir_named packages
+#  y guardar este fichero en /config/packages/solis_modbus.yaml
+#
+#  ⚠️ ANTES: borrar la integración cloud `solis` (ya no da datos: el stick
+#     dejó de reportar a SolisCloud al flashearse el puente).
+#
+#  Registros verificados en hardware el 2026-10-05 comparando contra los
+#  últimos valores de la nube (coincidencia byte a byte):
+#     33283 = 4437,72 kWh  vs nube 4437 kWh   (comprada de la red)
+#     33285 = 8326,37 kWh  vs nube 8317 kWh   (exportada a la red)
+#     33029 = 24784   kWh  vs nube 24756 kWh  (generación total)
+#     33177 = 21342   kWh  vs nube 21323 kWh  (consumo total vivienda)  ← descubierto
+#     33147 = 619 W        vs nube 600 W      (consumo instantáneo vivienda)
+#     33149 = 747 W        vs nube -727 W     (batería; signo opuesto)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# 1) LECTURA MODBUS (FC4 = input registers: el ESINV NO responde a FC3)
+# ---------------------------------------------------------------------------
+modbus:
+  - name: solis                 # el nombre del hub forma parte del entity_id
+    type: tcp
+    host: 192.168.1.254         # stick S3 (puente Modbus)
+    port: 502                   # 502 = Modbus TCP (MBAP) · 5020 = RTU crudo
+    delay: 0.5          # 2026-10-06: era 2 s; con más sensores saturaba
+    # 2026-10-07: los 5 sensores que iban a 10 s pasan a 30 s -> menos carga en el
+    # bus RS485 (compartido con evcc, interval 30 s) y menos filas en el recorder.
+    # Ningún sensor del hub queda ya por debajo de 30 s.
+    timeout: 5
+    message_wait_milliseconds: 60
+    sensors:
+      # ---- Producción y consumos (W) ----
+      - name: AC Output Total Power          # = "Total DC output power" (producción PV)
+        unique_id: solis_ac_output_total_power
+        slave: 1
+        address: 33057
+        input_type: input
+        data_type: uint32
+        device_class: power
+        state_class: measurement
+        unit_of_measurement: W
+        scan_interval: 30
+      - name: Total Consumption Power         # consumo instantáneo de la vivienda
+        unique_id: solis_total_consumption_power
+        slave: 1
+        address: 33147
+        input_type: input
+        data_type: uint16
+        device_class: power
+        state_class: measurement
+        unit_of_measurement: W
+        scan_interval: 30
+      - name: Battery Direction               # 0 = carga, 1 = descarga (interno)
+        unique_id: solis_battery_direction_raw
+        slave: 1
+        address: 33135
+        input_type: input
+        data_type: uint16
+        scan_interval: 30
+      - name: Battery Power Raw               # magnitud (el signo lo pone la plantilla)
+        unique_id: solis_battery_power_raw
+        slave: 1
+        address: 33149
+        input_type: input
+        data_type: int32
+        device_class: power
+        state_class: measurement
+        unit_of_measurement: W
+        scan_interval: 30
+      - name: Power Grid Total Power Raw      # medidor externo (signo lo pone la plantilla)
+        unique_id: solis_power_grid_total_power_raw
+        slave: 1
+        address: 33263
+        input_type: input
+        data_type: int32
+        device_class: power
+        state_class: measurement
+        unit_of_measurement: W
+        scan_interval: 30
+
+      # ---- Batería ----
+      - name: Remaining Battery Capacity
+        unique_id: solis_remaining_battery_capacity
+        slave: 1
+        address: 33139
+        input_type: input
+        data_type: uint16
+        device_class: battery
+        state_class: measurement
+        unit_of_measurement: "%"
+        scan_interval: 30
+      - name: Battery State Of Health
+        unique_id: solis_battery_state_of_health
+        slave: 1
+        address: 33140
+        input_type: input
+        data_type: uint16
+        device_class: battery
+        state_class: measurement
+        unit_of_measurement: "%"
+        scan_interval: 30
+      - name: Battery Voltage
+        unique_id: solis_battery_voltage
+        slave: 1
+        address: 33133
+        input_type: input
+        data_type: uint16
+        precision: 1
+        scale: 0.1
+        device_class: voltage
+        state_class: measurement
+        unit_of_measurement: V
+        scan_interval: 30
+      - name: Battery Current Raw             # magnitud; signo por plantilla
+        unique_id: solis_battery_current_raw
+        slave: 1
+        address: 33134
+        input_type: input
+        data_type: int16
+        precision: 1
+        scale: 0.1
+        device_class: current
+        state_class: measurement
+        unit_of_measurement: A
+        scan_interval: 30
+
+      # ---- Energía (kWh) ----
+      - name: Energy Today                    # generación de hoy (la da el inversor)
+        unique_id: solis_energy_today
+        slave: 1
+        address: 33035
+        input_type: input
+        data_type: uint16
+        precision: 1
+        scale: 0.1
+        device_class: energy
+        state_class: total_increasing
+        unit_of_measurement: kWh
+        scan_interval: 60
+      - name: Energy Total                    # generación acumulada
+        unique_id: solis_energy_total
+        slave: 1
+        address: 33029
+        input_type: input
+        data_type: uint32
+        device_class: energy
+        state_class: total_increasing
+        unit_of_measurement: kWh
+        scan_interval: 300
+      - name: Total Energy Purchased          # comprada de la red (acumulada)
+        unique_id: solis_total_energy_purchased
+        slave: 1
+        address: 33283
+        input_type: input
+        data_type: uint32
+        precision: 2
+        scale: 0.01
+        device_class: energy
+        state_class: total_increasing
+        unit_of_measurement: kWh
+        scan_interval: 300
+      - name: Total On Grid Energy            # exportada a la red (acumulada)
+        unique_id: solis_total_on_grid_energy
+        slave: 1
+        address: 33285
+        input_type: input
+        data_type: uint32
+        precision: 2
+        scale: 0.01
+        device_class: energy
+        state_class: total_increasing
+        unit_of_measurement: kWh
+        scan_interval: 300
+      - name: Total Energy Used               # consumo acumulado de la vivienda
+        unique_id: solis_total_energy_used
+        slave: 1
+        address: 33177
+        input_type: input
+        data_type: uint32
+        device_class: energy
+        state_class: total_increasing
+        unit_of_measurement: kWh
+        scan_interval: 300
+      - name: Total Battery Charge            # acumulada (base de la diaria)
+        unique_id: solis_total_battery_charge
+        slave: 1
+        address: 33161
+        input_type: input
+        data_type: uint32
+        device_class: energy
+        state_class: total_increasing
+        unit_of_measurement: kWh
+        scan_interval: 300
+      - name: Total Battery Discharge         # acumulada (base de la diaria)
+        unique_id: solis_total_battery_discharge
+        slave: 1
+        address: 33165
+        input_type: input
+        data_type: uint32
+        device_class: energy
+        state_class: total_increasing
+        unit_of_measurement: kWh
+        scan_interval: 300
+
+      # ---- Diagnóstico ----
+      - name: Inverter Temperature
+        unique_id: solis_inverter_temperature
+        slave: 1
+        address: 33093
+        input_type: input
+        data_type: uint16
+        precision: 1
+        scale: 0.1
+        device_class: temperature
+        state_class: measurement
+        unit_of_measurement: °C
+        scan_interval: 60
+      - name: AC Frequency
+        unique_id: solis_ac_frequency
+        slave: 1
+        address: 33094
+        input_type: input
+        data_type: uint16
+        precision: 2
+        scale: 0.01
+        device_class: frequency
+        state_class: measurement
+        unit_of_measurement: Hz
+        scan_interval: 60
+      - name: DC Voltage 1
+        unique_id: solis_dc_voltage_pv1
+        slave: 1
+        address: 33049
+        input_type: input
+        data_type: uint16
+        precision: 1
+        scale: 0.1
+        device_class: voltage
+        state_class: measurement
+        unit_of_measurement: V
+        scan_interval: 60
+
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 🔔 ALARMAS Y ESTADO DEL INVERSOR — añadido 2026-10-06
+      #    ESINV: datos = FC4 (input_type: input); ajustes 43xxx = FC3 (holding).
+      # ═══════════════════════════════════════════════════════════════════════
+      - name: Alarm Code
+        unique_id: solis_alarm_code
+        slave: 1
+        address: 33070
+        input_type: input
+        data_type: uint16
+        scan_interval: 60
+      - name: Grid Fault Status Bits
+        unique_id: solis_grid_fault_bits
+        slave: 1
+        address: 33116
+        input_type: input
+        data_type: uint16
+        scan_interval: 60
+      - name: Backup Fault Status Bits
+        unique_id: solis_backup_fault_bits
+        slave: 1
+        address: 33117
+        input_type: input
+        data_type: uint16
+        scan_interval: 60
+      - name: Battery Fault Status Bits
+        unique_id: solis_battery_fault_bits
+        slave: 1
+        address: 33118
+        input_type: input
+        data_type: uint16
+        scan_interval: 60
+      - name: Inverter Fault Status Bits 1
+        unique_id: solis_inverter_fault_bits1
+        slave: 1
+        address: 33119
+        input_type: input
+        data_type: uint16
+        scan_interval: 60
+      - name: Inverter Fault Status Bits 2
+        unique_id: solis_inverter_fault_bits2
+        slave: 1
+        address: 33120
+        input_type: input
+        data_type: uint16
+        scan_interval: 60
+      - name: Operating Status Bits
+        unique_id: solis_operating_status_bits
+        slave: 1
+        address: 33121
+        input_type: input
+        data_type: uint16
+        scan_interval: 60
+      - name: Operating Mode Code
+        unique_id: solis_operating_mode_code
+        slave: 1
+        address: 33122
+        input_type: input
+        data_type: uint16
+        scan_interval: 60
+      - name: Storage Control Switching Value
+        unique_id: solis_storage_control_switch
+        slave: 1
+        address: 33132
+        input_type: input
+        data_type: uint16
+        scan_interval: 30
+      - name: Battery Fault Status 1 BMS
+        unique_id: solis_battery_fault_bms1
+        slave: 1
+        address: 33145
+        input_type: input
+        data_type: uint16
+        scan_interval: 60
+      - name: Battery Fault Status 2 BMS
+        unique_id: solis_battery_fault_bms2
+        slave: 1
+        address: 33146
+        input_type: input
+        data_type: uint16
+        scan_interval: 60
+      - name: AFCI Status
+        unique_id: solis_afci_status
+        slave: 1
+        address: 33215
+        input_type: input
+        data_type: uint16
+        scan_interval: 300
+      # ---- 🔋 BMS ----
+      - name: Battery Temperature BMS
+        unique_id: solis_battery_temperature_bms
+        slave: 1
+        address: 33043
+        input_type: input
+        data_type: uint16
+        precision: 1
+        scale: 0.1
+        device_class: temperature
+        state_class: measurement
+        unit_of_measurement: °C
+        scan_interval: 60
+      - name: Battery Voltage BMS
+        unique_id: solis_battery_voltage_bms
+        slave: 1
+        address: 33141
+        input_type: input
+        data_type: uint16
+        precision: 2
+        scale: 0.01      # medido 2026-10-06: raw 4920 -> 49,20 V (con 0,1 daba 492 V)
+        device_class: voltage
+        state_class: measurement
+        unit_of_measurement: V
+        scan_interval: 60
+      - name: Battery Current BMS
+        unique_id: solis_battery_current_bms
+        slave: 1
+        address: 33142
+        input_type: input
+        data_type: int16
+        precision: 1
+        scale: 0.1
+        device_class: current
+        state_class: measurement
+        unit_of_measurement: A
+        scan_interval: 60
+      - name: Battery Charge Current Limit BMS
+        unique_id: solis_battery_charge_limit_bms
+        slave: 1
+        address: 33143
+        input_type: input
+        data_type: uint16
+        precision: 1
+        scale: 0.1
+        device_class: current
+        unit_of_measurement: A
+        scan_interval: 300
+      - name: Battery Discharge Current Limit BMS
+        unique_id: solis_battery_discharge_limit_bms
+        slave: 1
+        address: 33144
+        input_type: input
+        data_type: uint16
+        precision: 1
+        scale: 0.1
+        device_class: current
+        unit_of_measurement: A
+        scan_interval: 300
+      # ---- 📊 ENERGÍA DIARIA NATIVA DEL INVERSOR (sin utility_meter) ----
+      - name: PV Energy Yesterday
+        unique_id: solis_pv_energy_yesterday
+        slave: 1
+        address: 33036
+        input_type: input
+        data_type: uint16
+        precision: 1
+        scale: 0.1
+        device_class: energy
+        unit_of_measurement: kWh
+        scan_interval: 300
+      - name: Battery Charge Energy Today
+        unique_id: solis_battery_charge_energy_today
+        slave: 1
+        address: 33163
+        input_type: input
+        data_type: uint16
+        precision: 1
+        scale: 0.1
+        device_class: energy
+        unit_of_measurement: kWh
+        scan_interval: 120
+      - name: Battery Charge Energy Yesterday
+        unique_id: solis_battery_charge_energy_yesterday
+        slave: 1
+        address: 33164
+        input_type: input
+        data_type: uint16
+        precision: 1
+        scale: 0.1
+        device_class: energy
+        unit_of_measurement: kWh
+        scan_interval: 300
+      - name: Battery Discharge Energy Today
+        unique_id: solis_battery_discharge_energy_today
+        slave: 1
+        address: 33167
+        input_type: input
+        data_type: uint16
+        precision: 1
+        scale: 0.1
+        device_class: energy
+        unit_of_measurement: kWh
+        scan_interval: 120
+      - name: Battery Discharge Energy Yesterday
+        unique_id: solis_battery_discharge_energy_yesterday
+        slave: 1
+        address: 33168
+        input_type: input
+        data_type: uint16
+        precision: 1
+        scale: 0.1
+        device_class: energy
+        unit_of_measurement: kWh
+        scan_interval: 300
+      - name: Grid Energy Imported Today
+        unique_id: solis_grid_energy_imported_today
+        slave: 1
+        address: 33171
+        input_type: input
+        data_type: uint16
+        precision: 1
+        scale: 0.1
+        device_class: energy
+        unit_of_measurement: kWh
+        scan_interval: 120
+      - name: Grid Energy Fed Today
+        unique_id: solis_grid_energy_fed_today
+        slave: 1
+        address: 33175
+        input_type: input
+        data_type: uint16
+        precision: 1
+        scale: 0.1
+        device_class: energy
+        unit_of_measurement: kWh
+        scan_interval: 120
+      - name: Consumption Energy Today
+        unique_id: solis_consumption_energy_today
+        slave: 1
+        address: 33179
+        input_type: input
+        data_type: uint16
+        precision: 1
+        scale: 0.1
+        device_class: energy
+        unit_of_measurement: kWh
+        scan_interval: 300
+      # ---- 🛡️ AJUSTES DE RESPALDO / BATERÍA (holding: FC3) ----
+      - name: Battery Model Code
+        unique_id: solis_battery_model_code
+        slave: 1
+        address: 43009
+        input_type: holding
+        data_type: uint16
+        scan_interval: 3600
+      - name: Max Charge SOC
+        unique_id: solis_max_charge_soc
+        slave: 1
+        address: 43010
+        input_type: holding
+        data_type: uint16
+        unit_of_measurement: "%"
+        scan_interval: 300
+      - name: Overdischarge SOC
+        unique_id: solis_overdischarge_soc
+        slave: 1
+        address: 43011
+        input_type: holding
+        data_type: uint16
+        unit_of_measurement: "%"
+        scan_interval: 300
+      - name: Force Charge SOC
+        unique_id: solis_force_charge_soc
+        slave: 1
+        address: 43018
+        input_type: holding
+        data_type: uint16
+        unit_of_measurement: "%"
+        scan_interval: 300
+      - name: Backup SOC
+        unique_id: solis_backup_soc
+        slave: 1
+        address: 43024
+        input_type: holding
+        data_type: uint16
+        unit_of_measurement: "%"
+        scan_interval: 300
+      - name: Storage Control Switch Setting
+        unique_id: solis_storage_control_setting
+        slave: 1
+        address: 43110
+        input_type: holding
+        data_type: uint16
+        scan_interval: 60
+      - name: Battery Max Charge Current Setting
+        unique_id: solis_battery_max_charge_current_setting
+        slave: 1
+        address: 43117
+        input_type: holding
+        data_type: uint16
+        precision: 1
+        scale: 0.1
+        device_class: current
+        unit_of_measurement: A
+        scan_interval: 300
+      - name: Battery Max Discharge Current Setting
+        unique_id: solis_battery_max_discharge_current_setting
+        slave: 1
+        address: 43118
+        input_type: holding
+        data_type: uint16
+        precision: 1
+        scale: 0.1
+        device_class: current
+        unit_of_measurement: A
+        scan_interval: 300
+      - name: Off-Grid Overdischarge SOC
+        unique_id: solis_offgrid_overdischarge_soc
+        slave: 1
+        address: 43137
+        input_type: holding
+        data_type: uint16
+        unit_of_measurement: "%"
+        scan_interval: 300
+
+# ---------------------------------------------------------------------------
+# 2) ENERGÍAS DIARIAS Y MENSUALES
+#    El inversor sólo publica los ACUMULADOS para red y batería, así que las
+#    versiones diarias/mensuales se derivan con utility_meter (mismo entity_id
+#    que usaba la nube -> los paneles no cambian).
+# ---------------------------------------------------------------------------
+utility_meter:
+  solis_daily_grid_energy_purchased:
+    name: Solis Daily Grid Energy Purchased
+    source: sensor.solis_total_energy_purchased_filtrado
+    cycle: daily
+  solis_daily_on_grid_energy:
+    name: Solis Daily On Grid Energy
+    source: sensor.solis_total_on_grid_energy_filtrado
+    cycle: daily
+  solis_daily_energy_charged:
+    name: Solis Daily Energy Charged
+    source: sensor.solis_total_battery_charge_filtrado
+    cycle: daily
+  solis_daily_energy_discharged:
+    name: Solis Daily Energy Discharged
+    source: sensor.solis_total_battery_discharge_filtrado
+    cycle: daily
+
+# ---------------------------------------------------------------------------
+# 3) PLANTILLAS — reproducen magnitudes con SIGNO y las diarias derivadas
+#    (se añaden a template: !include templates.yaml)
+# ---------------------------------------------------------------------------
+template:
+  - sensor:
+      - name: Solis Battery Power           # + carga / − descarga (como la nube)
+        unique_id: solis_battery_power
+        default_entity_id: sensor.solis_battery_power
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        state: >-
+          {% set mag = states('sensor.solis_battery_power_raw') | float(0) %}
+          {% set descargando = states('sensor.solis_battery_direction_raw') | int(0) == 1 %}
+          {{ (-mag if descargando else mag) | round(0) }}
+
+      - name: Solis Battery Current         # + carga / − descarga
+        unique_id: solis_battery_current
+        default_entity_id: sensor.solis_battery_current
+        unit_of_measurement: A
+        device_class: current
+        state_class: measurement
+        state: >-
+          {% set mag = states('sensor.solis_battery_current_raw') | float(0) %}
+          {% set descargando = states('sensor.solis_battery_direction_raw') | int(0) == 1 %}
+          {{ (-mag if descargando else mag) | round(2) }}
+
+      - name: Solis Power Grid Total Power   # + IMPORTACIÓN / − exportación
+      #   ⚠️ CORREGIDO 2026-10-06: el comentario decía "+ exportación" pero con
+      #   (-raw) sale NEGATIVO al exportar ⇒ es +importación (convención evcc/estándar).
+      #   Verificado con datos: 14:20 UTC PV 5520 / casa 506 / bat +2266 / red −2364.
+        unique_id: solis_power_grid_total_power
+        default_entity_id: sensor.solis_power_grid_total_power
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        state: >-
+          {% set raw = states('sensor.solis_power_grid_total_power_raw') | float(0) %}
+          {{ (-raw) | round(0) }}
+
+      - name: Solis Daily Grid Energy Used   # consumo diario = autoconsumo + comprada
+        unique_id: solis_daily_grid_energy_used
+        default_entity_id: sensor.solis_daily_grid_energy_used
+        unit_of_measurement: kWh
+        device_class: energy
+        # 2026-10-06: ahora usa el registro nativo del inversor (33179).
+        state: "{{ states('sensor.solis_consumption_energy_today') | float(0) | round(2) }}"
+
+      - name: "Solis: Última actualización (interno)"
+        unique_id: solis_timestamp_measurements_received
+        default_entity_id: sensor.solis_timestamp_measurements_received
+        state: >-
+          {{ as_timestamp(states.sensor.solis_ac_output_total_power.last_updated) | int(0) }}
+
+      # ══════════════════════════════════════════════════════════════════════
+      # NORMALIZACIÓN DE FLUJO Y ESTADO — 2026-10-06
+      #   ⚠️ OJO: Solis/HA usa +CARGA / −descarga de batería; evcc usa lo contrario.
+      #   Estos sensores muestran SIEMPRE magnitud + dirección en texto, para que
+      #   el dashboard no sea ambiguo.
+      # ══════════════════════════════════════════════════════════════════════
+      - name: "FV · Red · Flujo"
+        unique_id: fv_red_flujo
+        default_entity_id: sensor.fv_red_flujo
+        icon: mdi:transmission-tower
+        state: >-
+          {% set p = states('sensor.solis_power_grid_total_power') | float(0) %}
+          {% if p > 25 %}Importando {{ p | round(0) | int }} W
+          {% elif p < -25 %}Vertiendo {{ (0 - p) | round(0) | int }} W
+          {% else %}Equilibrado{% endif %}
+
+      - name: "FV · Red · Importando"
+        unique_id: fv_red_importando
+        default_entity_id: sensor.fv_red_importando
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >-
+          {% set p = states('sensor.solis_power_grid_total_power') | float(0) %}
+          {{ (p if p > 0 else 0) | round(0) }}
+
+      - name: "FV · Red · Vertiendo"
+        unique_id: fv_red_vertiendo
+        default_entity_id: sensor.fv_red_vertiendo
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >-
+          {% set p = states('sensor.solis_power_grid_total_power') | float(0) %}
+          {{ ((0 - p) if p < 0 else 0) | round(0) }}
+
+      - name: "FV · Batería · Flujo"
+        unique_id: fv_bateria_flujo
+        default_entity_id: sensor.fv_bateria_flujo
+        icon: mdi:battery-charging
+        state: >-
+          {% set p = states('sensor.solis_battery_power') | float(0) %}
+          {% if p > 25 %}Cargando {{ p | round(0) | int }} W
+          {% elif p < -25 %}Descargando {{ (0 - p) | round(0) | int }} W
+          {% else %}En reposo{% endif %}
+
+      - name: "FV · Batería · Cargando"
+        unique_id: fv_bateria_cargando
+        default_entity_id: sensor.fv_bateria_cargando
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >-
+          {% set p = states('sensor.solis_battery_power') | float(0) %}
+          {{ (p if p > 0 else 0) | round(0) }}
+
+      - name: "FV · Batería · Descargando"
+        unique_id: fv_bateria_descargando
+        default_entity_id: sensor.fv_bateria_descargando
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >-
+          {% set p = states('sensor.solis_battery_power') | float(0) %}
+          {{ ((0 - p) if p < 0 else 0) | round(0) }}
+
+      - name: "FV · Modo del inversor"
+        unique_id: fv_modo_inversor
+        default_entity_id: sensor.fv_modo_inversor
+        icon: mdi:state-machine
+        state: >-
+          {% set v = states('sensor.solis_storage_control_switch') | int(-1) %}
+          {% if v < 0 %}desconocido
+          {% else %}
+          {% set names = {0:'Self-Use',1:'Time-of-Use',2:'Off-Grid',3:'Wakeup batería',
+                          4:'Reserva/Backup',5:'Carga de red PERMITIDA',6:'Feed-in priority',
+                          7:'Batt OVC',8:'Force-charge peak-shaving',9:'Corr. corriente',
+                          10:'Battery healing',11:'Peak shaving'} %}
+          {% set ns = namespace(out=[]) %}
+          {% for bit, nm in names.items() %}
+            {% if v | bitwise_and(2 ** bit) %}{% set ns.out = ns.out + [nm] %}{% endif %}
+          {% endfor %}
+          {{ ns.out | join(' + ') if ns.out else 'sin bits (0)' }}
+          {% endif %}
+
+      - name: "FV · Respaldo · Carga de red"
+        unique_id: fv_respaldo_carga_red
+        default_entity_id: sensor.fv_respaldo_carga_red
+        icon: mdi:transmission-tower-import
+        state: >-
+          {% set v = states('sensor.solis_storage_control_setting') | int(-1) %}
+          {% if v < 0 %}desconocido
+          {% elif v | bitwise_and(32) %}⚠️ PERMITIDA — el inversor puede cargar la batería de la red
+          {% else %}prohibida ✓{% endif %}
+
+      - name: "FV · Alarmas"
+        unique_id: fv_alarmas
+        default_entity_id: sensor.fv_alarmas
+        icon: mdi:alert
+        state: >-
+          {% set checks = [
+            ('sensor.solis_alarm_code', 'Alarma inversor'),
+            ('sensor.solis_grid_fault_bits', 'Fallo red'),
+            ('sensor.solis_backup_fault_bits', 'Fallo respaldo'),
+            ('sensor.solis_battery_fault_bits', 'Fallo batería'),
+            ('sensor.solis_inverter_fault_bits1', 'Fallo inversor 1'),
+            ('sensor.solis_inverter_fault_bits2', 'Fallo inversor 2'),
+            ('sensor.solis_battery_fault_bms1', 'Fallo BMS 1'),
+            ('sensor.solis_battery_fault_bms2', 'Fallo BMS 2') ] %}
+          {% set ns = namespace(items=[]) %}
+          {% for e, label in checks %}
+            {% set v = states(e) %}
+            {% if v not in ['unknown','unavailable','none',''] and (v | int(0)) != 0 %}
+              {% set ns.items = ns.items + [label ~ '=' ~ v] %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.items | join(' · ') if ns.items else 'Sin alarmas' }}
+
+  - binary_sensor:
+      - name: "FV · Alarma activa"
+        unique_id: fv_alarma_activa
+        default_entity_id: binary_sensor.fv_alarma_activa
+        device_class: problem
+        state: >-
+          {{ states('sensor.fv_alarmas') not in ['Sin alarmas','unknown','unavailable','none',''] }}
